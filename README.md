@@ -19,6 +19,7 @@ No plugin store, no license server, no cloud calls.
 | Backups | site tarballs and database dumps, download, prune |
 | Auth | session cookie, scrypt password hashing, TOTP two-factor, login and operation audit logs, optional secret entry path |
 | Terminal | WebSocket PTY shell |
+| Import | read an existing aaPanel install and bring over its sites, domains, certificates, rewrite rules, databases and cron jobs |
 
 ## Requirements
 
@@ -28,30 +29,92 @@ No plugin store, no license server, no cloud calls.
 
 ## Install
 
+One command. It installs the dependencies, clones the repo, builds the
+virtualenv, writes the config, wires up nginx, installs the systemd unit,
+starts the service and prints your login:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/nhkhanq/SlimPanel/main/install.sh | sudo bash
+```
+
+Knobs, all optional:
+
+```bash
+curl -fsSL .../install.sh | sudo SLIMPANEL_PORT=9000 SLIMPANEL_DIR=/opt/slimpanel bash
+```
+
+| Variable | Default | Effect |
+|---|---|---|
+| `SLIMPANEL_PORT` | `8899` | panel port |
+| `SLIMPANEL_DIR` | `/www/SlimPanel` | install location |
+| `SLIMPANEL_BRANCH` | `main` | branch to install |
+| `SLIMPANEL_SKIP_NGINX` | `0` | do not touch nginx |
+| `SLIMPANEL_SKIP_SERVICE` | `0` | do not install the systemd unit |
+
+The installer only adds an nginx include when it finds a drop-in directory it
+can write to; otherwise it prints the one line for you to paste. It never edits
+an existing `nginx.conf`.
+
+Re-running the installer upgrades in place. To remove the service and the nginx
+include while keeping your data:
+
+```bash
+sudo bash /www/SlimPanel/uninstall.sh
+```
+
+### Manual install
+
 ```bash
 git clone https://github.com/nhkhanq/SlimPanel.git /www/SlimPanel
-cd /www/SlimPanel
-bash deploy/install.sh
-```
-
-Then add one line inside the `http { }` block of your `nginx.conf`:
-
-```nginx
-include /www/SlimPanel/data/vhost/nginx/*.conf;
-```
-
-```bash
-nginx -t && nginx -s reload
-```
-
-Start it:
-
-```bash
-.venv/bin/python runserver.py          # http://<server>:8899
+cd /www/SlimPanel && make install && make run
 ```
 
 The first start creates an `admin` account and writes the generated password to
 `data/initial_credentials.txt`. Set `SLIMPANEL_ADMIN_PASSWORD` to choose your own.
+
+## Importing from aaPanel
+
+SlimPanel can read an existing aaPanel installation and take over its sites.
+Nothing is written until you pass `--apply`, and aaPanel itself is only ever
+read.
+
+```bash
+.venv/bin/python -m app.cli inspect-aapanel        # show the aaPanel schema
+.venv/bin/python -m app.cli import-aapanel         # dry run, prints a plan
+.venv/bin/python -m app.cli import-aapanel --apply # write it
+```
+
+The same thing lives under **Import** in the web UI.
+
+What comes across:
+
+| From aaPanel | Into SlimPanel |
+|---|---|
+| `sites` + `domain` tables | sites and their domains |
+| each site's vhost file | type (static / PHP / proxy), PHP version, run path, index files, SSL and force-HTTPS flags, proxy target |
+| `vhost/cert/<site>/` | certificates, copied into SlimPanel's cert directory |
+| `vhost/rewrite/<site>.conf` | rewrite rules |
+| `databases` table | database records with their credentials — the MySQL databases themselves are left alone |
+| `crontab` table | cron jobs, with aaPanel's schedule model converted to standard cron syntax and the shell script copied into SlimPanel |
+
+What is skipped, and why it tells you so: sites with no vhost file, names that
+fail validation, non-MySQL engines (MongoDB, PostgreSQL, SQL Server, Redis),
+and cron jobs whose script is missing. Cron jobs whose script calls aaPanel
+internals are imported but left disabled, because they break once aaPanel is
+gone.
+
+**Imported sites are parked.** Their vhosts are written as `*.conf.disabled` so
+nginx keeps serving aaPanel's copies and no `server_name` conflicts appear. The
+cutover is yours to make:
+
+1. `import-aapanel --apply`, then check each site under **Sites**
+2. remove aaPanel's include from `nginx.conf`
+3. add SlimPanel's include
+4. start the sites in SlimPanel, or re-run the import with `--activate`
+5. `nginx -t && nginx -s reload`
+
+Roll back by reversing steps 2 and 3 — aaPanel's own vhost files are never
+modified.
 
 ## Configuration
 
@@ -79,10 +142,11 @@ that panel's configuration.
 ```
 app/
   api/        HTTP routes, one module per area
+  cli.py      serve, import-aapanel, inspect-aapanel, create-user, set-password
   services/   the actual work: nginx, acme, mysql, files, system, cron, backup
   templates/  nginx vhost Jinja2 template
   static/     single-page UI, no build step
-tests/        92 tests, all offline
+tests/        126 tests, all offline
 deploy/       systemd unit and installer
 ```
 

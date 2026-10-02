@@ -341,6 +341,49 @@ views.logs = async (root) => {
     ])));
 };
 
+views.import = async (root) => {
+  const panelDir = el("input", { value: "/www/server/panel", style: "min-width:260px" });
+  const cronDir = el("input", { value: "/www/server/cron", style: "min-width:220px" });
+  const activate = el("input", { type: "checkbox" });
+  const output = el("div");
+
+  const body = () => ({
+    panel_dir: panelDir.value.trim(),
+    cron_dir: cronDir.value.trim(),
+    activate: activate.checked,
+  });
+
+  const show = (report) => {
+    output.textContent = "";
+    output.append(el("pre", { textContent: JSON.stringify(report.summary, null, 2) }));
+    output.append(table(["Kind", "Name", "Action", "Note"], report.items, (item) =>
+      el("tr", {}, [
+        el("td", { textContent: item.kind }),
+        el("td", { textContent: item.name }),
+        el("td", { textContent: item.action, className: item.action === "import" ? "ok" : "muted" }),
+        el("td", { textContent: item.reason, className: "muted" }),
+      ])));
+  };
+
+  root.append(
+    el("p", { className: "muted", textContent: "Reads the aaPanel SQLite database and vhost files. Preview changes nothing. Imported sites are parked until you start them." }),
+    el("div", { className: "row" }, [
+      el("label", {}, ["aaPanel dir", panelDir]),
+      el("label", {}, ["cron dir", cronDir]),
+      el("label", {}, ["serve immediately", activate]),
+    ]),
+    el("div", { className: "row" }, [
+      actionButton("Preview", async () => show(await api("/import/aapanel/preview", { method: "POST", body: body() })), ""),
+      actionButton("Apply", async () => {
+        if (!confirm("Import into SlimPanel now?")) return;
+        show(await api("/import/aapanel/apply", { method: "POST", body: body() }));
+        toast("Import finished");
+      }),
+    ]),
+    output,
+  );
+};
+
 views.terminal = async (root) => {
   const output = el("pre", { style: "max-height:62vh" });
   const input = el("input", { placeholder: "command", style: "flex:1" });
@@ -392,6 +435,7 @@ const MENU = [
   ["cron", "Cron"],
   ["backups", "Backups"],
   ["logs", "Logs"],
+  ["import", "Import"],
   ["terminal", "Terminal"],
 ];
 
