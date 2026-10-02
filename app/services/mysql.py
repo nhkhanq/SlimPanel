@@ -25,6 +25,11 @@ def _base_argv(binary: str) -> list[str]:
     return argv
 
 
+def base_argv(binary: str) -> list[str]:
+    """Public alias: other services build mysql/mysqldump commands from this."""
+    return _base_argv(binary)
+
+
 def execute(sql: str, timeout: int = 60) -> shell.Result:
     result = shell.run(_base_argv(settings.mysql_bin) + ["-N", "-B", "-e", sql], timeout=timeout)
     if not result.ok:

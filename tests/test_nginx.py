@@ -98,7 +98,8 @@ def test_rewrite_root_detection():
 
     conf = nginx.render_vhost(site, ["rewritten.test"])
     assert "try_files $uri $uri/ =404;" not in conf
-    assert "rewritten.test.conf;" in conf
+    # Globbed so a deleted rewrite file cannot take all of nginx down.
+    assert "rewritten.test.conf*;" in conf
     nginx.rewrite_file(site.name).unlink()
 
 

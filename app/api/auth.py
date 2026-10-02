@@ -15,6 +15,7 @@ from app.security import (
     verify_password,
     verify_totp,
 )
+from app.services import safety
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -27,16 +28,38 @@ def _record_login(session: SessionDep, username: str, ip: str, success: bool, de
 @router.post("/login")
 def login(payload: LoginRequest, request: Request, response: Response, session: SessionDep):
     ip = client_ip(request)
+
+    if not safety.ip_allowed(session, ip):
+        _record_login(session, payload.username, ip, False, "address not allowed")
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "This address may not reach the panel")
+
+    blocked, remaining = safety.is_blocked(session, ip)
+    if blocked:
+        _record_login(session, payload.username, ip, False, "rate limited")
+        raise HTTPException(
+            status.HTTP_429_TOO_MANY_REQUESTS,
+            f"Too many failed attempts. Try again in {settings.login_block_minutes} minutes.",
+        )
+
     user = session.exec(select(User).where(User.username == payload.username)).first()
 
     if not user or not verify_password(payload.password, user.password_hash):
+        safety.record_attempt(session, ip, payload.username)
         _record_login(session, payload.username, ip, False, "bad credentials")
-        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid username or password")
+        raise HTTPException(
+            status.HTTP_401_UNAUTHORIZED,
+            f"Invalid username or password. {max(0, remaining - 1)} attempts left.",
+        )
 
     if user.totp_enabled:
         if not verify_totp(user.totp_secret or "", payload.code):
+            safety.record_attempt(session, ip, user.username)
             _record_login(session, user.username, ip, False, "bad totp")
             raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid two-factor code")
+
+    # A good login clears the counter, so one fat-fingered password does not
+    # keep counting against you for the rest of the window.
+    safety.clear_attempts(session, ip)
 
     token = create_session_token(user.username)
     response.set_cookie(

@@ -5,7 +5,7 @@ from fastapi import APIRouter
 from app.config import settings
 from app.deps import SessionDep, UserDep, audit
 from app.schemas import Ok, ServiceAction
-from app.services import nginx, system
+from app.services import backup, nginx, system
 
 router = APIRouter(prefix="/system", tags=["system"])
 
@@ -67,6 +67,26 @@ def nginx_reload(session: SessionDep, user: UserDep):
     result = nginx.reload_config()
     audit(session, user, "system.nginx.reload", success=result.ok, detail=result.output)
     return Ok(ok=result.ok, message=result.output[:1000])
+
+
+@router.get("/connections")
+def connections(user: UserDep, limit: int = 100):
+    return system.connections(min(limit, 500))
+
+
+@router.get("/users")
+def system_users(user: UserDep):
+    return system.system_users()
+
+
+@router.get("/storage")
+def storage_usage(session: SessionDep, user: UserDep):
+    return backup.usage(session)
+
+
+@router.get("/nginx/config")
+def nginx_config(user: UserDep):
+    return nginx.read_main_config()
 
 
 @router.get("/settings")

@@ -1,7 +1,40 @@
+# Managed by SlimPanel - edits are overwritten when the site is saved
+{%- if site.limit_req %}
+
+limit_req_zone $binary_remote_addr zone={{ zone_name }}_req:10m rate={{ site.limit_req }}r/s;
+{%- endif %}
+{%- if site.limit_conn %}
+
+limit_conn_zone $binary_remote_addr zone={{ zone_name }}_conn:10m;
+{%- endif %}
+{%- if proxy_cache_rules %}
+{%- for rule in proxy_cache_rules %}
+
+proxy_cache_path {{ cache_root }}/{{ site.name }}_{{ rule.id }} levels=1:2 keys_zone={{ zone_name }}_c{{ rule.id }}:20m inactive={{ rule.cache_time }}s max_size=1g;
+{%- endfor %}
+{%- endif %}
+{%- if domain_redirects %}
+{%- for rule in domain_redirects %}
+
 server {
     listen 80;
 {%- if site.ssl_enabled %}
     listen 443 ssl{% if http2_inline %} http2{% endif %};
+    ssl_certificate {{ cert_path }};
+    ssl_certificate_key {{ key_path }};
+{%- endif %}
+    server_name {{ rule.source }};
+    return {{ rule.code }} {{ rule.target }}{% if rule.keep_path %}$request_uri{% elif rule.keep_query %}?$args{% endif %};
+}
+{%- endfor %}
+{%- endif %}
+
+server {
+    listen 80;
+    listen [::]:80;
+{%- if site.ssl_enabled %}
+    listen 443 ssl{% if http2_inline %} http2{% endif %};
+    listen [::]:443 ssl{% if http2_inline %} http2{% endif %};
 {%- if not http2_inline %}
     http2 on;
 {%- endif %}
@@ -12,6 +45,9 @@ server {
 
     access_log {{ access_log }};
     error_log {{ error_log }};
+{%- if site.client_max_body %}
+    client_max_body_size {{ site.client_max_body }};
+{%- endif %}
 
     location ^~ /.well-known/acme-challenge/ {
         root {{ acme_webroot }};
@@ -22,12 +58,15 @@ server {
 {%- if site.ssl_enabled %}
     ssl_certificate {{ cert_path }};
     ssl_certificate_key {{ key_path }};
-    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_protocols {{ site.ssl_protocols }};
     ssl_ciphers ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305;
     ssl_prefer_server_ciphers off;
     ssl_session_cache shared:SSL:10m;
     ssl_session_timeout 1d;
     ssl_session_tickets off;
+{%- if site.hsts %}
+    add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+{%- endif %}
 {%- if site.force_https %}
 
     if ($scheme != "https") {
@@ -35,12 +74,124 @@ server {
     }
 {%- endif %}
 {%- endif %}
+{%- if site.extra_headers %}
 
-    location ~ ^/(\.user\.ini|\.htaccess|\.git|\.env|\.svn|LICENSE|README\.md) {
+{{ site.extra_headers | indent(4, true) }}
+{%- endif %}
+{%- if site.ip_allow or site.ip_deny %}
+
+    # Access control
+{%- for entry in ip_allow_list %}
+    allow {{ entry }};
+{%- endfor %}
+{%- for entry in ip_deny_list %}
+    deny {{ entry }};
+{%- endfor %}
+{%- if site.ip_allow %}
+    deny all;
+{%- endif %}
+{%- endif %}
+{%- if site.limit_conn %}
+
+    limit_conn {{ zone_name }}_conn {{ site.limit_conn }};
+{%- endif %}
+{%- if site.limit_req %}
+    limit_req zone={{ zone_name }}_req burst={{ site.limit_req * 2 }} nodelay;
+{%- endif %}
+{%- if site.limit_rate %}
+    limit_rate {{ site.limit_rate }}k;
+{%- endif %}
+
+    location ~ ^/(\.user\.ini|\.htaccess|\.git|\.env|\.svn|\.DS_Store|composer\.json|composer\.lock|package-lock\.json|LICENSE|README\.md) {
         return 404;
     }
+{%- if site.waf_enabled %}
 
-{%- if site.site_type == "proxy" %}
+    # Lightweight request filter
+    if ($query_string ~* "(union.*select|concat.*\(|\.\./\.\./|<script|base64_decode|eval\()") {
+        return 403;
+    }
+    if ($http_user_agent ~* "(sqlmap|nikto|wpscan|nmap|masscan|dirbuster|acunetix)") {
+        return 403;
+    }
+    if ($request_method !~ ^(GET|HEAD|POST|PUT|PATCH|DELETE|OPTIONS)$) {
+        return 405;
+    }
+{%- endif %}
+{%- if site.deny_extensions %}
+
+    location ~* \.({{ deny_extensions }})$ {
+        return 403;
+    }
+{%- endif %}
+{%- if site.anti_leech_enabled %}
+
+    # Hotlink protection
+    location ~* \.({{ anti_leech_extensions }})$ {
+        valid_referers none blocked server_names {{ anti_leech_allow }};
+        if ($invalid_referer) {
+{%- if site.anti_leech_return.startswith("http") %}
+            return 302 {{ site.anti_leech_return }};
+{%- else %}
+            return {{ site.anti_leech_return }};
+{%- endif %}
+        }
+        expires {{ site.cache_expires }};
+        access_log off;
+    }
+{%- endif %}
+{%- for auth in dir_auths %}
+
+    location {{ auth.location }} {
+        auth_basic "{{ auth.name }}";
+        auth_basic_user_file {{ auth.file }};
+{%- if site.site_type == "php" %}
+        try_files $uri $uri/ /index.php?$query_string;
+{%- endif %}
+    }
+{%- endfor %}
+{%- for rule in path_redirects %}
+
+    location {{ rule.match }} {
+        return {{ rule.code }} {{ rule.target }}{% if rule.keep_path %}$request_uri{% endif %};
+    }
+{%- endfor %}
+{%- for rule in proxy_rules %}
+
+    location {{ rule.location }} {
+        proxy_pass {{ rule.target }};
+        proxy_http_version 1.1;
+{%- if rule.websocket %}
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+{%- endif %}
+        proxy_set_header Host {{ rule.host_header }};
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_connect_timeout 30s;
+        proxy_read_timeout 120s;
+        proxy_send_timeout 120s;
+{%- if rule.cache_enabled %}
+        proxy_cache {{ zone_name }}_c{{ rule.id }};
+        proxy_cache_valid 200 304 301 302 {{ rule.cache_time }}s;
+        proxy_cache_key $host$request_uri;
+        add_header X-Cache $upstream_cache_status;
+{%- endif %}
+{%- for pair in rule.replacements %}
+        sub_filter "{{ pair[0] }}" "{{ pair[1] }}";
+{%- endfor %}
+{%- if rule.replacements %}
+        sub_filter_once off;
+        sub_filter_types text/css text/javascript application/javascript;
+{%- endif %}
+{%- if rule.extra %}
+{{ rule.extra | indent(8, true) }}
+{%- endif %}
+    }
+{%- endfor %}
+{%- if site.site_type == "proxy" and not root_claimed %}
+
     location / {
         proxy_pass {{ site.proxy_target }};
         proxy_http_version 1.1;
@@ -52,38 +203,91 @@ server {
         proxy_set_header X-Forwarded-Proto $scheme;
         proxy_read_timeout 120s;
     }
+{%- elif site.site_type == "balance" and not root_claimed %}
+
+    location / {
+        proxy_pass http://{{ site.upstream_name }};
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_next_upstream error timeout http_502 http_503 http_504;
+    }
+{%- elif site.site_type in ("node", "python", "java", "go", "dotnet") and not root_claimed %}
+
+    location / {
+        proxy_pass http://127.0.0.1:{{ app_port }};
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_read_timeout 300s;
+    }
 {%- elif site.site_type == "php" %}
-    location ~ \.php$ {
+
+    location ~ [^/]\.php(/|$) {
         try_files $uri =404;
         fastcgi_pass {{ php_socket }};
         fastcgi_index index.php;
+        fastcgi_split_path_info ^(.+?\.php)(/.*)$;
+        fastcgi_param PATH_INFO $fastcgi_path_info;
         fastcgi_param SCRIPT_FILENAME $document_root$fastcgi_script_name;
+        fastcgi_read_timeout 300;
         include fastcgi_params;
     }
-
-{%- if not rewrite_root %}
+{%- if not root_claimed %}
 
     location / {
         try_files $uri $uri/ /index.php?$query_string;
     }
 {%- endif %}
-{%- elif not rewrite_root %}
+{%- elif not root_claimed %}
+
     location / {
         try_files $uri $uri/ =404;
     }
 {%- endif %}
+{%- if site.cache_enabled %}
+
+    location ~* \.(gif|jpg|jpeg|png|webp|avif|svg|ico|bmp|woff2?|ttf|eot|otf|mp4|webm|css|js)$ {
+        expires {{ site.cache_expires }};
+        add_header Cache-Control "public, immutable";
+        access_log off;
+    }
+{%- else %}
 
     location ~* \.(gif|jpg|jpeg|png|webp|svg|ico|woff2?|ttf)$ {
         expires 30d;
         access_log off;
     }
+{%- endif %}
+{%- if site.gzip_enabled %}
 
+    gzip on;
+    gzip_vary on;
+    gzip_comp_level 5;
+    gzip_min_length 1k;
+    gzip_proxied any;
+    gzip_types text/plain text/css text/xml text/javascript application/json application/javascript application/xml application/xml+rss application/x-font-ttf image/svg+xml;
+{%- endif %}
+{%- if site.error_page %}
+
+{{ site.error_page | indent(4, true) }}
+{%- endif %}
 {%- if include_rewrite %}
 
-    include {{ rewrite_file }};
+    # Globbed on purpose: a plain include of a missing file is fatal to the whole
+    # of nginx, so one deleted rewrite file would take every site down on reload.
+    include {{ rewrite_glob }};
 {%- endif %}
 {%- if site.extra_config %}
 
-{{ site.extra_config }}
+{{ site.extra_config | indent(4, true) }}
 {%- endif %}
 }

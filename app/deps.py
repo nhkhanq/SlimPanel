@@ -22,12 +22,19 @@ def client_ip(request: Request) -> str:
 
 
 def current_user(
+    request: Request,
     session: SessionDep,
     slimpanel_session: Annotated[str | None, Cookie(alias=SESSION_COOKIE)] = None,
 ) -> User:
+    from app.services import safety
+
     unauthorized = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated"
     )
+    if not safety.ip_allowed(session, client_ip(request)):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, detail="This address may not reach the panel"
+        )
     if not slimpanel_session:
         raise unauthorized
 

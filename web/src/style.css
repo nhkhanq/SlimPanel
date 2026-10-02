@@ -14,13 +14,13 @@ body {
 }
 
 .mono {
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   font-size: 12.5px;
 }
 
 .page {
-  padding: 20px 24px 40px;
-  max-width: 1480px;
+  padding: 18px 22px 40px;
+  max-width: 1600px;
 }
 
 .toolbar {
@@ -28,7 +28,7 @@ body {
   gap: 10px;
   align-items: center;
   flex-wrap: wrap;
-  margin-bottom: 16px;
+  margin-bottom: 14px;
 }
 
 .toolbar .spacer {
@@ -47,11 +47,80 @@ body {
   overflow: auto;
   white-space: pre-wrap;
   word-break: break-all;
+  margin: 0;
 }
 
 .terminal-host {
   height: calc(100vh - 210px);
   min-height: 320px;
   padding: 8px;
-  border-radius: 10px;
+  border-radius: 8px;
+}
+
+.gauge-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+  gap: 14px;
+}
+
+.kv {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 6px 16px;
+  font-size: 13px;
+  align-items: baseline;
+}
+
+.kv dt {
+  color: var(--muted, #8b929e);
+}
+
+.kv dd {
+  margin: 0;
+  word-break: break-all;
+}
+
+.muted {
+  color: #8b929e;
+  font-size: 12.5px;
+}
+
+.score-ring {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+}
+
+.chip-list {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.sider-brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 16px 20px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  color: #ffffff;
+  letter-spacing: 0.2px;
+}
+
+.sider-brand .dot {
+  width: 26px;
+  height: 26px;
+  border-radius: 7px;
+  display: grid;
+  place-items: center;
+  background: linear-gradient(135deg, #20a53a, #17802c);
+  flex: none;
+}
+
+@media (max-width: 720px) {
+  .page {
+    padding: 14px 12px 32px;
+  }
 }

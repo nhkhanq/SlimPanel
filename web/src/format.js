@@ -34,3 +34,27 @@ export function datetime(value) {
 export function percent(value) {
   return `${Number(value || 0).toFixed(1)}%`;
 }
+
+export function rate(value) {
+  return `${bytes(value)}/s`;
+}
+
+export function number(value) {
+  return Number(value || 0).toLocaleString();
+}
+
+export function relative(value) {
+  if (!value) return "";
+  const then = new Date(value).getTime();
+  if (Number.isNaN(then)) return String(value);
+  const seconds = Math.round((Date.now() - then) / 1000);
+  if (seconds < 60) return "just now";
+  if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`;
+  if (seconds < 86400) return `${Math.floor(seconds / 3600)}h ago`;
+  return `${Math.floor(seconds / 86400)}d ago`;
+}
+
+export function shorten(value, limit = 48) {
+  const text = String(value ?? "");
+  return text.length > limit ? `${text.slice(0, limit - 1)}…` : text;
+}

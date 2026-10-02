@@ -124,3 +124,50 @@ def service_action(name: str, action: str) -> shell.Result:
     if action not in SERVICE_ACTIONS:
         raise PanelError(f"Unsupported action '{action}'")
     return shell.run([settings.systemctl_bin, action, name], timeout=60)
+
+
+def connections(limit: int = 100) -> list[dict]:
+    """Established connections, grouped by remote address."""
+    counts: dict[str, dict] = {}
+    try:
+        rows = psutil.net_connections(kind="inet")
+    except (psutil.AccessDenied, RuntimeError):
+        return []
+
+    for conn in rows:
+        if conn.status != psutil.CONN_ESTABLISHED or not conn.raddr:
+            continue
+        key = conn.raddr.ip
+        entry = counts.setdefault(key, {"address": key, "count": 0, "ports": set()})
+        entry["count"] += 1
+        if conn.laddr:
+            entry["ports"].add(conn.laddr.port)
+
+    result = [
+        {"address": entry["address"], "count": entry["count"], "ports": sorted(entry["ports"])}
+        for entry in counts.values()
+    ]
+    result.sort(key=lambda row: row["count"], reverse=True)
+    return result[:limit]
+
+
+def system_users() -> list[dict]:
+    """Login-capable accounts, which is what matters for an FTP or SSH home."""
+    import pwd
+
+    rows = []
+    for entry in pwd.getpwall():
+        if entry.pw_shell.rstrip().endswith(("nologin", "false")) and entry.pw_uid >= 1000:
+            continue
+        rows.append(
+            {
+                "name": entry.pw_name,
+                "uid": entry.pw_uid,
+                "gid": entry.pw_gid,
+                "home": entry.pw_dir,
+                "shell": entry.pw_shell,
+                "system": entry.pw_uid < 1000,
+            }
+        )
+    rows.sort(key=lambda row: (row["system"], row["uid"]))
+    return rows

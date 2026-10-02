@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 import tempfile
 from pathlib import Path
 
@@ -46,17 +47,33 @@ def www_root() -> Path:
     return WWW
 
 
+SQLModel.metadata.create_all(engine)
+
+
 @pytest.fixture(autouse=True)
 def clean_db():
-    SQLModel.metadata.drop_all(engine)
-    SQLModel.metadata.create_all(engine)
+    # Emptying the tables is a few hundred times cheaper than dropping and
+    # recreating thirty of them, and leaves the same blank slate.
     with Session(engine) as session:
+        for table in reversed(SQLModel.metadata.sorted_tables):
+            session.exec(table.delete())
+        session.commit()
+
         from app.bootstrap import ensure_admin
 
         ensure_admin(session, password=ADMIN_PASSWORD)
+
     yield
+
     for stale in settings.vhost_dir.glob("*.conf*"):
         stale.unlink()
+    for stale in settings.upstream_dir.glob("*.conf"):
+        stale.unlink()
+    for stale in settings.recycle_dir.iterdir():
+        if stale.is_dir() and not stale.is_symlink():
+            shutil.rmtree(stale, ignore_errors=True)
+        else:
+            stale.unlink()
 
 
 @pytest.fixture

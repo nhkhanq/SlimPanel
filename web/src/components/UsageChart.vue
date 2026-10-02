@@ -8,10 +8,15 @@ const props = defineProps({
   height: { type: Number, default: 180 },
   capacity: { type: Number, default: 60 },
   interval: { type: Number, default: 3 },
+  // A non-percentage chart (network rate, disk IO) passes its own ceiling and
+  // label formatter; everything else keeps the 0-100 default.
+  max: { type: Number, default: 100 },
+  format: { type: Function, default: null },
+  spanText: { type: String, default: "" },
 });
 
 const WIDTH = 760;
-const PAD = { top: 14, right: 56, bottom: 22, left: 36 };
+const PAD = { top: 14, right: 64, bottom: 22, left: 46 };
 
 const palette = computed(() => seriesColors[state.theme] || seriesColors.dark);
 const plotWidth = computed(() => WIDTH - PAD.left - PAD.right);
@@ -21,11 +26,20 @@ const hover = ref(null);
 
 const xAt = (index) =>
   PAD.left + (props.capacity <= 1 ? 0 : (index / (props.capacity - 1)) * plotWidth.value);
-const yAt = (value) => PAD.top + plotHeight.value * (1 - Math.min(Math.max(value, 0), 100) / 100);
+const ceiling = computed(() => {
+  if (props.max > 0) return props.max;
+  const highest = Math.max(...props.series.flatMap((entry) => entry.points), 0);
+  return highest > 0 ? highest * 1.15 : 1;
+});
+const yAt = (value) =>
+  PAD.top + plotHeight.value * (1 - Math.min(Math.max(value, 0), ceiling.value) / ceiling.value);
+const label = (value) => (props.format ? props.format(value) : `${Number(value).toFixed(0)}%`);
 
 const pointCount = computed(() => Math.max(...props.series.map((s) => s.points.length), 0));
 const offset = computed(() => Math.max(props.capacity - pointCount.value, 0));
-const spanLabel = computed(() => `${Math.round((props.capacity * props.interval) / 60)} min ago`);
+const spanLabel = computed(
+  () => props.spanText || `${Math.round((props.capacity * props.interval) / 60)} min ago`,
+);
 
 const lines = computed(() =>
   props.series.map((entry) => ({
@@ -41,7 +55,9 @@ const lines = computed(() =>
   })),
 );
 
-const ticks = [0, 25, 50, 75, 100];
+const ticks = computed(() =>
+  [0, 0.25, 0.5, 0.75, 1].map((fraction) => fraction * ceiling.value),
+);
 function onMove(event) {
   if (!pointCount.value) return;
   const box = event.currentTarget.getBoundingClientRect();
@@ -71,7 +87,7 @@ function onMove(event) {
       <g class="grid">
         <template v-for="tick in ticks" :key="tick">
           <line :x1="PAD.left" :x2="WIDTH - PAD.right" :y1="yAt(tick)" :y2="yAt(tick)" />
-          <text :x="PAD.left - 8" :y="yAt(tick) + 4" text-anchor="end">{{ tick }}</text>
+          <text :x="PAD.left - 8" :y="yAt(tick) + 4" text-anchor="end">{{ label(tick) }}</text>
         </template>
         <text :x="PAD.left" :y="height - 6">{{ spanLabel }}</text>
         <text :x="WIDTH - PAD.right" :y="height - 6" text-anchor="end">now</text>
@@ -104,7 +120,7 @@ function onMove(event) {
           :x="xAt(line.points.length - 1 + offset) + 9"
           :y="yAt(line.last) + 4"
         >
-          {{ line.last.toFixed(0) }}%
+          {{ label(line.last) }}
         </text>
       </template>
 
@@ -126,7 +142,7 @@ function onMove(event) {
     <div v-if="hover !== null && pointCount" class="tooltip">
       <span v-for="line in lines" :key="`${line.key}-tip`">
         <i :style="{ background: line.color }" />
-        {{ line.label }} {{ (line.points[hover] ?? 0).toFixed(1) }}%
+        {{ line.label }} {{ label(line.points[hover] ?? 0) }}
       </span>
     </div>
   </div>

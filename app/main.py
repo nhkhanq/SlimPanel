@@ -13,6 +13,7 @@ from app.bootstrap import ensure_admin
 from app.config import settings
 from app.db import engine, init_db
 from app.errors import PanelError
+from app.services import monitor
 
 DIST_DIR = Path(__file__).resolve().parent / "static" / "dist"
 
@@ -29,13 +30,24 @@ BUILD_HINT = """<!doctype html>
 
 def create_app() -> FastAPI:
     settings.ensure_dirs()
-    app = FastAPI(title="SlimPanel", version="0.2.0", docs_url=f"{settings.entry_path}/api/docs")
+    app = FastAPI(title="SlimPanel", version="1.0.0", docs_url=f"{settings.entry_path}/api/docs")
 
-    init_db()
+    migrated = init_db()
+    if migrated:
+        print(f"[slimpanel] schema upgraded: {len(migrated)} new columns")
     with Session(engine) as session:
         created = ensure_admin(session, password=os.environ.get("SLIMPANEL_ADMIN_PASSWORD", ""))
     if created:
         print(f"[slimpanel] admin account created: {created[0]} / {created[1]}")
+
+    @app.on_event("startup")
+    def start_sampler() -> None:
+        if monitor.start():
+            print(f"[slimpanel] monitor sampling every {settings.monitor_interval}s")
+
+    @app.on_event("shutdown")
+    def stop_sampler() -> None:
+        monitor.stop()
 
     @app.exception_handler(PanelError)
     async def panel_error_handler(request: Request, exc: PanelError):

@@ -9,3 +9,7 @@ data/
 *.db-journal
 .env
 slimpanel.toml
+
+# Written by the Settings page and holds database passwords.
+slimpanel.json
+*.slimpanel.bak

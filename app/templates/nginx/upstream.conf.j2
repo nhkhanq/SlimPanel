@@ -1,0 +1,14 @@
+# Managed by SlimPanel - edits are overwritten when the pool is saved
+upstream {{ upstream.name }} {
+{%- if upstream.method == "ip_hash" %}
+    ip_hash;
+{%- elif upstream.method == "least_conn" %}
+    least_conn;
+{%- endif %}
+{%- for node in upstream.nodes %}
+    server {{ node.address }} weight={{ node.weight }} max_fails={{ node.max_fails }} fail_timeout={{ node.fail_timeout }}s{% if node.backup %} backup{% endif %}{% if node.down %} down{% endif %};
+{%- endfor %}
+{%- if upstream.keepalive %}
+    keepalive {{ upstream.keepalive }};
+{%- endif %}
+}
