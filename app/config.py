@@ -28,8 +28,8 @@ class Settings:
     www_root: Path = Path("/www/wwwroot")
     log_root: Path = Path("/www/wwwlogs")
 
-    nginx_bin: str = "/usr/sbin/nginx"
-    nginx_reload_cmd: str = "nginx -s reload"
+    nginx_bin: str = "auto"
+    nginx_reload_cmd: str = ""
     systemctl_bin: str = "systemctl"
 
     mysql_bin: str = "mysql"

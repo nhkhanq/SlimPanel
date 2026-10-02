@@ -22,7 +22,7 @@ def test_inspect_lists_tables_and_counts(source):
     info = importer.inspect(source)
     assert "sites" in info["tables"]
     assert "name" in info["tables"]["sites"]
-    assert info["rows"]["sites"] == 5
+    assert info["rows"]["sites"] == 9
 
 
 def test_parse_php_vhost(source):
@@ -68,7 +68,7 @@ def test_plan_classifies_everything(session, source):
     report = importer.plan(session, source)
     summary = report.summary()
 
-    assert summary["site"]["import"] == 3
+    assert summary["site"]["import"] == 7
     assert summary["site"]["skip"] == 2
     assert summary["database"]["import"] == 2
     assert summary["database"]["skip"] == 2
@@ -97,7 +97,15 @@ def test_apply_imports_sites(session, source):
     importer.apply(session, source)
     sites = {site.name: site for site in session.exec(select(Site)).all()}
 
-    assert set(sites) == {"php.test", "proxy.test", "static.test"}
+    assert set(sites) == {
+        "php.test",
+        "proxy.test",
+        "static.test",
+        "node.test",
+        "moved.test",
+        "spa.test",
+        "mixed.test",
+    }
     php = sites["php.test"]
     assert php.site_type == SiteType.php
     assert php.php_version == "7.4"
@@ -177,7 +185,7 @@ def test_apply_is_idempotent(session, source):
     second = importer.apply(session, source)
 
     assert second.summary()["site"].get("import") is None
-    assert len(session.exec(select(Site)).all()) == 3
+    assert len(session.exec(select(Site)).all()) == 7
     assert len(session.exec(select(Database)).all()) == 2
 
 
@@ -187,7 +195,7 @@ def test_preview_endpoint(client, source):
         json={"panel_dir": str(source.panel_dir), "cron_dir": str(source.cron_dir)},
     )
     assert response.status_code == 200
-    assert response.json()["summary"]["site"]["import"] == 3
+    assert response.json()["summary"]["site"]["import"] == 7
 
 
 def test_apply_endpoint(client, source):
@@ -196,9 +204,116 @@ def test_apply_endpoint(client, source):
         json={"panel_dir": str(source.panel_dir), "cron_dir": str(source.cron_dir)},
     )
     assert response.status_code == 200
-    assert len(client.get("/api/sites").json()) == 3
+    assert len(client.get("/api/sites").json()) == 7
 
 
 def test_inspect_endpoint_requires_auth(anon, source):
     response = anon.post("/api/import/aapanel/inspect", json={"panel_dir": str(source.panel_dir)})
     assert response.status_code == 401
+
+
+def test_proxy_defined_in_an_included_file_is_found(session, source):
+    importer.apply(session, source)
+    site = session.exec(select(Site).where(Site.name == "node.test")).first()
+    assert site.site_type == SiteType.proxy
+    assert site.proxy_target == "http://127.0.0.1:5000"
+
+
+def test_include_resolution_stays_inside_the_panel_directory(tmp_path, source):
+    outside = tmp_path / "outside.conf"
+    outside.write_text("location / { proxy_pass http://127.0.0.1:9999; }")
+    conf = f"server {{ server_name x.test; root /tmp/x; include {outside}; }}"
+
+    parsed = importer.parse_vhost(conf, source.panel_dir)
+    assert parsed["proxy_target"] == ""
+
+
+def test_root_outside_the_recorded_path_is_kept_whole(session, source):
+    importer.apply(session, source)
+    site = session.exec(select(Site).where(Site.name == "moved.test")).first()
+    assert site.root == "/srv/app/dist"
+    assert site.run_path == ""
+
+
+def test_run_path_is_split_only_when_nested(session, source):
+    importer.apply(session, source)
+    php = session.exec(select(Site).where(Site.name == "php.test")).first()
+    assert php.root == "/www/wwwroot/php.test"
+    assert php.run_path == "public"
+
+
+def test_non_root_proxy_locations_are_carried_over(session, source):
+    report = importer.apply(session, source)
+    site = session.exec(select(Site).where(Site.name == "mixed.test")).first()
+
+    assert site.site_type == SiteType.static
+    assert "proxy_pass http://127.0.0.1:9000;" in site.extra_config
+    assert "proxy_pass http://127.0.0.1:9000;" in nginx.disabled_vhost_file("mixed.test").read_text()
+
+    item = next(i for i in report.of("site") if i.name == "mixed.test")
+    assert "extra proxy locations carried over" in item.reason
+
+
+def test_spa_rewrite_does_not_duplicate_the_root_location(session, source):
+    importer.apply(session, source)
+    conf = nginx.disabled_vhost_file("spa.test").read_text()
+
+    assert conf.count("location / {") == 0
+    assert "include" in conf and "spa.test.conf" in conf
+    assert "try_files" in nginx.rewrite_file("spa.test").read_text()
+
+
+def test_force_https_survives_a_round_trip(session, source):
+    importer.apply(session, source)
+    conf = nginx.disabled_vhost_file("spa.test").read_text()
+    reparsed = importer.parse_vhost(conf)
+
+    assert reparsed["force_https"] is True
+    assert reparsed["ssl"] is True
+
+
+def test_commented_https_redirect_is_not_force_https():
+    conf = "server { server_name a.test;\n#    return 301 https://$host$request_uri;\n}"
+    assert importer.parse_vhost(conf)["force_https"] is False
+
+
+def test_inspect_reports_whether_a_mysql_root_password_is_recorded(source):
+    info = importer.inspect(source)
+    assert info["mysql_root_recorded"] is True
+
+
+def test_stale_database_records_are_skipped(session, source, monkeypatch):
+    from app.config import settings
+    from app.services import mysql
+
+    monkeypatch.setattr(settings, "dry_run", False)
+    monkeypatch.setattr(mysql, "server_available", lambda: True)
+    monkeypatch.setattr(mysql, "list_server_databases", lambda: ["app_db"])
+
+    report = importer.plan(session, source)
+    actions = {item.name: (item.action, item.reason) for item in report.of("database")}
+
+    assert actions["app_db"][0] == "import"
+    assert actions["logs_db"][0] == "skip"
+    assert "stale aaPanel record" in actions["logs_db"][1]
+
+
+def test_databases_are_imported_when_mysql_is_unreachable(session, source, monkeypatch):
+    from app.config import settings
+    from app.services import mysql
+
+    monkeypatch.setattr(settings, "dry_run", False)
+    monkeypatch.setattr(mysql, "server_available", lambda: False)
+
+    report = importer.plan(session, source)
+    assert report.summary()["database"]["import"] == 2
+
+
+def test_dry_run_does_not_query_mysql(session, source, monkeypatch):
+    from app.services import mysql
+
+    def explode():
+        raise AssertionError("MySQL must not be queried during a dry run")
+
+    monkeypatch.setattr(mysql, "server_available", explode)
+    assert importer.plan(session, source).summary()["database"]["import"] == 2

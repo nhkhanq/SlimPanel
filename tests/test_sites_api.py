@@ -115,7 +115,7 @@ def test_ssl_lifecycle_in_dry_run(client):
     assert status["force_https"] is True
 
     config = client.get(f"/api/sites/{site_id}/config").json()["content"]
-    assert "listen 443 ssl;" in config
+    assert "listen 443 ssl" in config
     assert "return 301 https://$host$request_uri;" in config
 
     client.post(f"/api/ssl/{site_id}/disable")

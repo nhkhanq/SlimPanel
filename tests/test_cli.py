@@ -16,7 +16,7 @@ def test_inspect_prints_schema(tmp_path, capsys):
     assert main(["inspect-aapanel", "--panel-dir", str(panel_dir)]) == 0
 
     payload = json.loads(capsys.readouterr().out)
-    assert payload["rows"]["sites"] == 5
+    assert payload["rows"]["sites"] == 9
     assert "where_hour" in payload["tables"]["crontab"]
 
 
@@ -40,7 +40,7 @@ def test_apply_imports(tmp_path, capsys, session):
     assert main(args_for(panel_dir, cron_dir, "--apply")) == 0
 
     assert "APPLIED" in capsys.readouterr().out
-    assert len(session.exec(select(Site)).all()) == 3
+    assert len(session.exec(select(Site)).all()) == 7
 
 
 def test_json_output(tmp_path, capsys):
@@ -48,7 +48,7 @@ def test_json_output(tmp_path, capsys):
     main(args_for(panel_dir, cron_dir, "--json"))
 
     payload = json.loads(capsys.readouterr().out)
-    assert payload["summary"]["site"]["import"] == 3
+    assert payload["summary"]["site"]["import"] == 7
     assert payload["tables"]["sites"]
 
 

@@ -1,8 +1,10 @@
 server {
     listen 80;
 {%- if site.ssl_enabled %}
-    listen 443 ssl;
+    listen 443 ssl{% if http2_inline %} http2{% endif %};
+{%- if not http2_inline %}
     http2 on;
+{%- endif %}
 {%- endif %}
     server_name {{ server_names }};
     root {{ document_root }};
@@ -59,10 +61,13 @@ server {
         include fastcgi_params;
     }
 
+{%- if not rewrite_root %}
+
     location / {
         try_files $uri $uri/ /index.php?$query_string;
     }
-{%- else %}
+{%- endif %}
+{%- elif not rewrite_root %}
     location / {
         try_files $uri $uri/ =404;
     }
@@ -73,7 +78,10 @@ server {
         access_log off;
     }
 
+{%- if include_rewrite %}
+
     include {{ rewrite_file }};
+{%- endif %}
 {%- if site.extra_config %}
 
 {{ site.extra_config }}

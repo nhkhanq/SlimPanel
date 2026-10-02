@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import glob
 import re
 import shutil
 import sqlite3
 from dataclasses import dataclass, field
+from textwrap import dedent, indent
 from pathlib import Path
 
 from sqlmodel import Session, select
@@ -11,7 +13,7 @@ from sqlmodel import Session, select
 from app.config import settings
 from app.errors import NotFound, PanelError
 from app.models import CronJob, Database, Domain, Site, SiteType
-from app.services import nginx
+from app.services import mysql, nginx
 from app.services.paths import safe_identifier, safe_site_name
 
 DEFAULT_PANEL_DIR = Path("/www/server/panel")
@@ -23,7 +25,13 @@ ROOT_DIRECTIVE = re.compile(r"^\s*root\s+([^;]+);", re.M)
 INDEX_DIRECTIVE = re.compile(r"^\s*index\s+([^;]+);", re.M)
 SERVER_NAME = re.compile(r"^\s*server_name\s+([^;]+);", re.M)
 SSL_CERT = re.compile(r"^\s*ssl_certificate\s+([^;]+);", re.M)
-HTTPS_REDIRECT = re.compile(r"^\s*rewrite\s+\^\(/\.\*\)\$\s+https://", re.M)
+HTTPS_REDIRECT = re.compile(
+    r"^\s*(?:rewrite\s+\^\(/\.\*\)\$\s+https://|return\s+30[1278]\s+https://)", re.M
+)
+INCLUDE = re.compile(r"^\s*include\s+([^;]+);", re.M)
+PROXY_LOCATION = re.compile(r"location\s+([^{]+?)\s*\{([^{}]*proxy_pass\s+[^;]+;[^{}]*)\}", re.S)
+ROOT_LOCATIONS = {"/", "^~ /", "= /"}
+MAX_INCLUDE_DEPTH = 3
 
 WEEKDAY_TYPES = {"week": "week", "month": "month"}
 
@@ -119,7 +127,20 @@ def inspect(source: Source) -> dict:
                 counts[name] = conn.execute(f"SELECT COUNT(*) FROM '{name}'").fetchone()[0]
             except sqlite3.DatabaseError:
                 counts[name] = -1
-    return {"path": str(source.db_path), "tables": schema, "rows": counts}
+        stored_root = _stored_mysql_root(conn)
+    return {
+        "path": str(source.db_path),
+        "tables": schema,
+        "rows": counts,
+        "mysql_root_recorded": bool(stored_root),
+    }
+
+
+def _stored_mysql_root(conn: sqlite3.Connection) -> str:
+    if "mysql_root" not in table_columns(conn, "config"):
+        return ""
+    row = conn.execute("SELECT mysql_root FROM config LIMIT 1").fetchone()
+    return (row[0] if row else "") or ""
 
 
 def _rows(conn: sqlite3.Connection, table: str) -> list[sqlite3.Row]:
@@ -136,10 +157,53 @@ def _value(row: sqlite3.Row, *names: str, default=None):
     return default
 
 
-def parse_vhost(text: str) -> dict:
-    active = "\n".join(
-        line for line in text.splitlines() if not line.strip().startswith("#")
-    )
+def strip_comments(text: str) -> str:
+    return "\n".join(line for line in text.splitlines() if not line.strip().startswith("#"))
+
+
+def expand_includes(
+    active: str, allowed_root: Path | None, depth: int = 0, seen: set[Path] | None = None
+) -> str:
+    if allowed_root is None or depth >= MAX_INCLUDE_DEPTH:
+        return ""
+
+    seen = seen if seen is not None else set()
+    collected: list[str] = []
+
+    for raw in INCLUDE.findall(active):
+        target = raw.strip().strip("\"'")
+        if not target.startswith("/"):
+            continue
+        for match in sorted(glob.glob(target)):
+            path = Path(match).resolve()
+            if path in seen or not path.is_file():
+                continue
+            try:
+                path.relative_to(allowed_root.resolve())
+            except ValueError:
+                continue
+            seen.add(path)
+            body = strip_comments(path.read_text(errors="replace"))
+            collected.append(body)
+            collected.append(expand_includes(body, allowed_root, depth + 1, seen))
+
+    return "\n".join(collected)
+
+
+def proxy_locations(text: str) -> list[tuple[str, str, str]]:
+    found = []
+    for match in PROXY_LOCATION.finditer(text):
+        location, block = match.group(1).strip(), match.group(2)
+        target = PROXY_PASS.search(block)
+        if target:
+            found.append((location, target.group(1).strip(), match.group(0)))
+    return found
+
+
+def parse_vhost(text: str, allowed_root: Path | None = None) -> dict:
+    active = strip_comments(text)
+    included = expand_includes(active, allowed_root)
+    combined = f"{active}\n{included}"
 
     parsed: dict = {
         "root": "",
@@ -147,6 +211,8 @@ def parse_vhost(text: str) -> dict:
         "domains": [],
         "php_version": "",
         "proxy_target": "",
+        "extra_proxies": [],
+        "extra_config": "",
         "ssl": False,
         "force_https": False,
     }
@@ -163,14 +229,24 @@ def parse_vhost(text: str) -> dict:
     if names:
         parsed["domains"] = names.group(1).split()
 
-    php = PHP_INCLUDE.search(active)
+    php = PHP_INCLUDE.search(combined)
     if php:
         raw = php.group(1)
         parsed["php_version"] = raw if raw == "00" else f"{raw[0]}.{raw[1:]}"
 
-    proxy = PROXY_PASS.search(active)
-    if proxy:
-        parsed["proxy_target"] = proxy.group(1).strip()
+    carried = []
+    for location, target, block in proxy_locations(combined):
+        if location in ROOT_LOCATIONS and not parsed["proxy_target"]:
+            parsed["proxy_target"] = target
+        else:
+            parsed["extra_proxies"].append(f"{location} -> {target}")
+            carried.append(indent(dedent(block).strip(), "    "))
+    parsed["extra_config"] = "\n\n".join(carried)
+
+    if not parsed["proxy_target"] and not parsed["extra_proxies"]:
+        bare = PROXY_PASS.search(combined)
+        if bare:
+            parsed["proxy_target"] = bare.group(1).strip()
 
     parsed["ssl"] = bool(SSL_CERT.search(active))
     parsed["force_https"] = bool(HTTPS_REDIRECT.search(active))
@@ -250,32 +326,45 @@ def _plan_sites(
             continue
 
         conf_file = source.vhost_dir / f"{name}.conf"
-        parsed = parse_vhost(conf_file.read_text(errors="replace")) if conf_file.is_file() else {}
+        parsed = (
+            parse_vhost(conf_file.read_text(errors="replace"), source.panel_dir)
+            if conf_file.is_file()
+            else {}
+        )
         if not parsed:
             report.add(Item("site", name, "skip", f"vhost not found: {conf_file}"))
             continue
 
         db_path = str(_value(row, "path", default="") or "")
         conf_root = parsed["root"] or db_path
-        run_path = ""
         if db_path and conf_root.startswith(db_path):
+            site_root = db_path
             run_path = conf_root[len(db_path) :].strip("/")
+        else:
+            site_root = conf_root or db_path
+            run_path = ""
 
         domains = domains_by_site.get(int(_value(row, "id", default=0) or 0)) or parsed["domains"]
         site_type = site_type_of(parsed)
+
+        warnings = []
+        if parsed["extra_proxies"]:
+            warnings.append("extra proxy locations carried over: " + ", ".join(parsed["extra_proxies"]))
 
         report.add(
             Item(
                 "site",
                 name,
                 "import",
+                reason="; ".join(warnings),
                 data={
                     "site_type": site_type.value,
-                    "root": db_path or conf_root,
+                    "root": site_root,
                     "run_path": run_path,
                     "index_files": parsed["index"] or "index.html index.htm",
                     "php_version": parsed["php_version"] if site_type == SiteType.php else "",
                     "proxy_target": parsed["proxy_target"],
+                    "extra_config": parsed["extra_config"],
                     "ssl": parsed["ssl"] and _cert_available(source, name),
                     "force_https": parsed["force_https"],
                     "domains": sorted(set(domains)) or [name],
@@ -287,6 +376,18 @@ def _plan_sites(
         existing.add(name)
 
 
+def _server_databases() -> set[str] | None:
+    """Names MySQL actually has, or None when the server cannot be queried."""
+    if settings.dry_run:
+        return None
+    try:
+        if not mysql.server_available():
+            return None
+        return set(mysql.list_server_databases())
+    except PanelError:
+        return None
+
+
 def _cert_available(source: Source, name: str) -> bool:
     base = source.cert_dir / name
     return (base / "fullchain.pem").is_file() and (base / "privkey.pem").is_file()
@@ -294,6 +395,7 @@ def _cert_available(source: Source, name: str) -> bool:
 
 def _plan_databases(session: Session, conn: sqlite3.Connection, report: Report) -> None:
     existing = {db.name for db in session.exec(select(Database)).all()}
+    on_server = _server_databases()
 
     for row in _rows(conn, "databases"):
         raw_name = str(_value(row, "name", default="")).strip()
@@ -313,6 +415,12 @@ def _plan_databases(session: Session, conn: sqlite3.Connection, report: Report) 
 
         if name in existing:
             report.add(Item("database", name, "skip", "already exists in SlimPanel"))
+            continue
+
+        if on_server is not None and name not in on_server:
+            report.add(
+                Item("database", name, "skip", "stale aaPanel record: not present on the MySQL server")
+            )
             continue
 
         report.add(
@@ -399,6 +507,7 @@ def _import_site(session: Session, source: Source, item: Item, activate: bool) -
         index_files=data["index_files"],
         php_version=data["php_version"],
         proxy_target=data["proxy_target"],
+        extra_config=data.get("extra_config", ""),
         ssl_enabled=data["ssl"],
         force_https=data["force_https"] and data["ssl"],
         enabled=activate,
@@ -423,7 +532,8 @@ def _import_site(session: Session, source: Source, item: Item, activate: bool) -
     if not activate:
         nginx.set_enabled(item.name, False)
 
-    item.reason = "imported" + ("" if activate else " (parked, not served yet)")
+    status = "imported" + ("" if activate else " (parked, not served yet)")
+    item.reason = "; ".join(filter(None, [status, item.reason]))
 
 
 def _copy_cert(source: Source, name: str) -> None:

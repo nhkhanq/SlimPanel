@@ -94,12 +94,25 @@ What comes across:
 | each site's vhost file | type (static / PHP / proxy), PHP version, run path, index files, SSL and force-HTTPS flags, proxy target |
 | `vhost/cert/<site>/` | certificates, copied into SlimPanel's cert directory |
 | `vhost/rewrite/<site>.conf` | rewrite rules |
-| `databases` table | database records with their credentials — the MySQL databases themselves are left alone |
+| `databases` table | database records with their credentials — the MySQL databases themselves are left alone, and records whose database no longer exists are skipped as stale |
 | `crontab` table | cron jobs, with aaPanel's schedule model converted to standard cron syntax and the shell script copied into SlimPanel |
+
+The vhost parser follows `include` directives inside the aaPanel directory, so
+reverse proxies that aaPanel keeps in `vhost/nginx/proxy/<site>/` are found
+rather than read as static sites. A proxy on `location /` becomes a proxy site;
+proxies on other locations are copied verbatim into the site's extra config and
+listed in the report. A document root that points outside the recorded site
+path is kept as-is instead of being mistaken for a run path.
+
+When SlimPanel can reach MySQL it checks each recorded database actually
+exists; panels that have been running for a while accumulate records for
+databases that were dropped outside the panel. `inspect-aapanel` also reports
+whether aaPanel has a MySQL root password on file, so you know whether that
+check can run — copy it into `mysql_password` in `slimpanel.json` first.
 
 What is skipped, and why it tells you so: sites with no vhost file, names that
 fail validation, non-MySQL engines (MongoDB, PostgreSQL, SQL Server, Redis),
-and cron jobs whose script is missing. Cron jobs whose script calls aaPanel
+stale database records, and cron jobs whose script is missing. Cron jobs whose script calls aaPanel
 internals are imported but left disabled, because they break once aaPanel is
 gone.
 
@@ -130,12 +143,20 @@ variables, which win over the file. Copy `slimpanel.example.json` to start.
 | `file_roots` | `["/www/wwwroot", "/www/wwwlogs"]` | the only paths the file manager may touch |
 | `managed_services` | `["nginx","mysql","redis"]` | the only services the panel may control |
 | `php_fpm_socket` | `unix:/run/php/php{version}-fpm.sock` | `{version}` comes from the site |
+| `nginx_bin` | `auto` | detected from the running nginx, then `$PATH`; set it explicitly if you run several |
 | `cron_target` | `/etc/cron.d/slimpanel` | written additively, never touches existing crontabs |
 | `dry_run` | `false` | log shell commands instead of running them |
 
 SlimPanel writes its vhosts to its own directory and its cron entries to its own
 `cron.d` file, so it can be installed next to an existing panel without touching
 that panel's configuration.
+
+The panel finds nginx by looking at the running master process first, so on a
+host where another panel ships its own build (aaPanel puts 1.24 in
+`/www/server/nginx/sbin/nginx` while Ubuntu's 1.18 sits in `/usr/sbin`) it tests
+and reloads the one actually serving your sites. The generated vhost follows
+that binary's version too: HTTP/2 is written as a `listen` flag below nginx
+1.25.1 and as its own `http2 on;` directive from 1.25.1 up.
 
 ## Layout
 
@@ -149,7 +170,7 @@ app/
 web/
   src/views/     one Vue file per page
   src/components/ stat cards and the usage chart
-tests/           128 tests, all offline
+tests/           150 tests, all offline
 deploy/          systemd unit and service file
 ```
 

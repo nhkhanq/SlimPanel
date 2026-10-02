@@ -1,15 +1,22 @@
 from __future__ import annotations
 
+import re
+import shutil
 from pathlib import Path
+
+import psutil
 
 from jinja2 import Environment, FileSystemLoader, StrictUndefined
 
 from app.config import settings
 from app.errors import CommandFailed
-from app.models import Site
+from app.models import Site, SiteType
 from app.services import shell
 
 TEMPLATE_DIR = Path(__file__).resolve().parent.parent / "templates" / "nginx"
+HTTP2_DIRECTIVE_SINCE = (1, 25, 1)
+VERSION_PATTERN = re.compile(r"nginx/(\d+)\.(\d+)\.(\d+)")
+ROOT_LOCATION = re.compile(r"^\s*location\s+(?:=\s+|\^~\s*)?/\s*\{", re.M)
 
 _env = Environment(
     loader=FileSystemLoader(TEMPLATE_DIR),
@@ -18,6 +25,31 @@ _env = Environment(
     trim_blocks=False,
     lstrip_blocks=False,
 )
+
+
+def binary() -> str:
+    configured = (settings.nginx_bin or "").strip()
+    if configured and configured != "auto":
+        return configured
+
+    for process in psutil.process_iter(["name", "exe"]):
+        if process.info.get("name") == "nginx" and process.info.get("exe"):
+            return process.info["exe"]
+    return shutil.which("nginx") or "/usr/sbin/nginx"
+
+
+def version() -> tuple[int, int, int] | None:
+    result = shell.run([binary(), "-v"], timeout=10)
+    match = VERSION_PATTERN.search(result.output)
+    if not match:
+        return None
+    return tuple(int(part) for part in match.groups())
+
+
+def uses_inline_http2() -> bool:
+    """nginx moved HTTP/2 from a listen flag to its own directive in 1.25.1."""
+    current = version()
+    return current is None or current < HTTP2_DIRECTIVE_SINCE
 
 
 def vhost_file(site_name: str) -> Path:
@@ -37,6 +69,13 @@ def cert_paths(site_name: str) -> tuple[Path, Path]:
     return base / "fullchain.pem", base / "privkey.pem"
 
 
+def rewrite_defines_root(site_name: str) -> bool:
+    path = rewrite_file(site_name)
+    if not path.is_file():
+        return False
+    return bool(ROOT_LOCATION.search(path.read_text(errors="replace")))
+
+
 def document_root(site: Site) -> str:
     root = Path(site.root)
     if site.run_path:
@@ -47,6 +86,8 @@ def document_root(site: Site) -> str:
 def render_vhost(site: Site, domains: list[str]) -> str:
     cert, key = cert_paths(site.name)
     template = _env.get_template("site.conf.j2")
+    rewrite_root = rewrite_defines_root(site.name)
+    is_proxy = site.site_type == SiteType.proxy
     return template.render(
         site=site,
         server_names=" ".join(domains) if domains else site.name,
@@ -58,6 +99,9 @@ def render_vhost(site: Site, domains: list[str]) -> str:
         key_path=str(key),
         php_socket=settings.php_fpm_socket.format(version=site.php_version or "8.1"),
         rewrite_file=str(rewrite_file(site.name)),
+        http2_inline=uses_inline_http2(),
+        rewrite_root=rewrite_root and not is_proxy,
+        include_rewrite=not (rewrite_root and is_proxy),
     )
 
 
@@ -100,11 +144,12 @@ def set_enabled(site_name: str, enabled: bool) -> None:
 
 
 def test_config() -> shell.Result:
-    return shell.run([settings.nginx_bin, "-t"], timeout=30)
+    return shell.run([binary(), "-t"], timeout=30)
 
 
 def reload_config() -> shell.Result:
-    return shell.run(settings.nginx_reload_cmd, timeout=30)
+    command = settings.nginx_reload_cmd.strip()
+    return shell.run(command or [binary(), "-s", "reload"], timeout=30)
 
 
 def apply_config(ignore_errors: bool = False) -> None:
