@@ -1,0 +1,15 @@
+[Unit]
+Description=SlimPanel
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/www/SlimPanel
+Environment=SLIMPANEL_CONFIG=/www/SlimPanel/slimpanel.json
+ExecStart=/www/SlimPanel/.venv/bin/python runserver.py
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

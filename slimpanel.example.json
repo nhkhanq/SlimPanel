@@ -1,0 +1,21 @@
+{
+  "host": "0.0.0.0",
+  "port": 8899,
+  "entry_path": "",
+  "www_root": "/www/wwwroot",
+  "log_root": "/www/wwwlogs",
+  "nginx_bin": "/usr/sbin/nginx",
+  "nginx_reload_cmd": "nginx -s reload",
+  "php_fpm_socket": "unix:/run/php/php{version}-fpm.sock",
+  "mysql_host": "127.0.0.1",
+  "mysql_port": 3306,
+  "mysql_user": "root",
+  "mysql_password": "",
+  "acme_bin": "certbot",
+  "acme_email": "",
+  "file_roots": ["/www/wwwroot", "/www/wwwlogs"],
+  "managed_services": ["nginx", "mysql", "redis"],
+  "cron_target": "/etc/cron.d/slimpanel",
+  "cron_user": "root",
+  "dry_run": false
+}
