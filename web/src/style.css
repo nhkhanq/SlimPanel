@@ -1,0 +1,57 @@
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#app {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+
+.mono {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12.5px;
+}
+
+.page {
+  padding: 20px 24px 40px;
+  max-width: 1480px;
+}
+
+.toolbar {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  flex-wrap: wrap;
+  margin-bottom: 16px;
+}
+
+.toolbar .spacer {
+  flex: 1;
+}
+
+.truncate {
+  max-width: 320px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.log-pane {
+  max-height: 60vh;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.terminal-host {
+  height: calc(100vh - 210px);
+  min-height: 320px;
+  padding: 8px;
+  border-radius: 10px;
+}

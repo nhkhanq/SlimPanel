@@ -1,4 +1,6 @@
 .venv/
+web/node_modules/
+web/.vite/
 __pycache__/
 *.py[cod]
 .pytest_cache/

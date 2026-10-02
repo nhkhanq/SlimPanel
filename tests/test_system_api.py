@@ -43,3 +43,14 @@ def test_nginx_test_endpoint(client):
 
 def test_healthz_is_public(anon):
     assert anon.get("/healthz").json() == {"ok": True}
+
+
+def test_spa_is_served_at_root(anon):
+    response = anon.get("/")
+    assert response.status_code == 200
+    assert "<div id=\"app\">" in response.text or "not built" in response.text
+
+
+def test_api_routes_win_over_the_spa_mount(anon):
+    assert anon.get("/api/sites").status_code == 401
+    assert anon.get("/api/auth/me").status_code == 401

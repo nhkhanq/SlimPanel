@@ -141,17 +141,38 @@ that panel's configuration.
 
 ```
 app/
-  api/        HTTP routes, one module per area
-  cli.py      serve, import-aapanel, inspect-aapanel, create-user, set-password
-  services/   the actual work: nginx, acme, mysql, files, system, cron, backup
-  templates/  nginx vhost Jinja2 template
-  static/     single-page UI, no build step
-tests/        126 tests, all offline
-deploy/       systemd unit and installer
+  api/           HTTP routes, one module per area
+  cli.py         serve, import-aapanel, inspect-aapanel, create-user, set-password
+  services/      the actual work: nginx, acme, mysql, files, system, cron, backup
+  templates/     nginx vhost Jinja2 template
+  static/dist/   the built web interface, committed so installs need no Node
+web/
+  src/views/     one Vue file per page
+  src/components/ stat cards and the usage chart
+tests/           128 tests, all offline
+deploy/          systemd unit and service file
 ```
 
 Adding a feature is three files: a function in `app/services/`, a route in
-`app/api/`, a view entry in `app/static/app.js`.
+`app/api/`, a view in `web/src/views/`.
+
+## Web interface
+
+Vue 3 + Vite + [Naive UI](https://www.naiveui.com/), hash-routed, served by the
+panel itself from `app/static/dist`. Dark and light themes, ~1.3 MB of built
+assets.
+
+The build output is committed, so installing the panel needs no Node. You only
+need Node to change the interface:
+
+```bash
+cd web
+npm install
+npm run dev      # http://localhost:5173, proxies /api to the panel on :8899
+npm run build    # writes app/static/dist
+```
+
+Commit `app/static/dist` with your change — the server has no build step.
 
 ## Tests
 

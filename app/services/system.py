@@ -11,6 +11,7 @@ from app.errors import PanelError
 from app.services import shell
 
 SERVICE_ACTIONS = {"start", "stop", "restart", "reload", "status"}
+PSEUDO_FILESYSTEMS = {"squashfs", "tmpfs", "devtmpfs", "overlay", "ramfs", "autofs"}
 
 
 def overview() -> dict:
@@ -45,6 +46,8 @@ def overview() -> dict:
 def disks() -> list[dict]:
     result = []
     for part in psutil.disk_partitions(all=False):
+        if part.fstype in PSEUDO_FILESYSTEMS:
+            continue
         try:
             usage = psutil.disk_usage(part.mountpoint)
         except (PermissionError, OSError):
